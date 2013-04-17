@@ -274,13 +274,23 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
                 }
             }];
         }];
-
+        
         NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
         [parameters setValue:requestToken.key forKey:@"oauth_token"];
+
+        NSMutableURLRequest *request = nil;
+        if (requestToken.loginURL) {
+            NSURL *loginURL = requestToken.loginURL;
+            request = [[NSMutableURLRequest alloc] initWithURL:loginURL];
+            NSURL *requestURL = [NSURL URLWithString:[[loginURL absoluteString] stringByAppendingFormat:[userAuthorizationPath rangeOfString:@"?"].location == NSNotFound ? @"?%@" : @"&%@", AFQueryStringFromParametersWithEncoding(parameters, self.stringEncoding)]];
+            [request setURL:requestURL];
+        } else {
+            request = [self requestWithMethod:@"GET" path:userAuthorizationPath parameters:parameters];
+        }
 #if __IPHONE_OS_VERSION_MIN_REQUIRED
-        [[UIApplication sharedApplication] openURL:[[self requestWithMethod:@"GET" path:userAuthorizationPath parameters:parameters] URL]];
+        [[UIApplication sharedApplication] openURL:[request URL]];
 #else
-        [[NSWorkspace sharedWorkspace] openURL:[[self requestWithMethod:@"GET" path:userAuthorizationPath parameters:parameters] URL]];
+        [[NSWorkspace sharedWorkspace] openURL:[request URL]];
 #endif
     } failure:^(NSError *error) {
         if (failure) {
@@ -301,7 +311,7 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
     NSMutableURLRequest *request = [self requestWithMethod:accessMethod path:path parameters:parameters];
     [request setHTTPBody:nil];
 
-    AFHTTPRequestOperation *operation = [self HTTPRequestOperationWithRequest:request success:^(AFHTTPRequestOperation *operation, id responseObject) {
+    AFHTTPRequestOperation *requestOperation = [self HTTPRequestOperationWithRequest:request success:^(AFHTTPRequestOperation *operation, id responseObject) {
         if (success) {
             AFOAuth1Token *accessToken = [[AFOAuth1Token alloc] initWithQueryString:operation.responseString];
             success(accessToken);
@@ -312,7 +322,7 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
         }
     }];
 
-    [self enqueueHTTPRequestOperation:operation];
+    [self enqueueHTTPRequestOperation:requestOperation];
 }
 
 - (void)acquireOAuthAccessTokenWithPath:(NSString *)path
@@ -328,8 +338,9 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
     [parameters setValue:requestToken.verifier forKey:@"oauth_verifier"];
 
     NSMutableURLRequest *request = [self requestWithMethod:accessMethod path:path parameters:parameters];
-
-    AFHTTPRequestOperation *operation = [self HTTPRequestOperationWithRequest:request success:^(AFHTTPRequestOperation *operation, id responseObject) {
+    [request setHTTPBody:nil];
+    
+    AFHTTPRequestOperation *requestOperation = [self HTTPRequestOperationWithRequest:request success:^(AFHTTPRequestOperation *operation, id responseObject) {
         if (success) {
             AFOAuth1Token *accessToken = [[AFOAuth1Token alloc] initWithQueryString:operation.responseString];
             success(accessToken);
@@ -340,7 +351,7 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
         }
     }];
 
-    [self enqueueHTTPRequestOperation:operation];
+    [self enqueueHTTPRequestOperation:requestOperation];
 }
 
 #pragma mark - AFHTTPClient
@@ -349,7 +360,20 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
                                       path:(NSString *)path
                                 parameters:(NSDictionary *)parameters
 {
-    NSMutableURLRequest *request = [super requestWithMethod:method path:path parameters:parameters];
+    NSMutableDictionary *requestParameters = [NSMutableDictionary dictionaryWithDictionary:parameters];
+    if ([method isEqual:@"POST"]) {
+        // ensure that our POST body parameters do not include anything prefixed with oauth_
+        // as these are included in the Authorization header (as per http://tools.ietf.org/html/rfc5849#section-3.5)
+        for (NSString *parameterName in parameters) {
+            if ([parameterName hasPrefix:@"oauth_"]) {
+                [requestParameters removeObjectForKey:parameterName];
+            }
+        }
+    }
+    
+    NSMutableURLRequest *request = [super requestWithMethod:method path:path parameters:requestParameters];
+    
+    // note that here we use the FULL parameter string (including oauth_*) for the purposes of signature generation
     [request setValue:[self authorizationHeaderForMethod:method path:path parameters:parameters] forHTTPHeaderField:@"Authorization"];
     [request setHTTPShouldHandleCookies:NO];
     
@@ -381,12 +405,6 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
 @end
 
 @implementation AFOAuth1Token
-@synthesize key = _key;
-@synthesize secret = _secret;
-@synthesize session = _session;
-@synthesize verifier = _verifier;
-@synthesize expiration = _expiration;
-@synthesize renewable = _renewable;
 @dynamic expired;
 
 - (id)initWithQueryString:(NSString *)queryString {
@@ -405,8 +423,16 @@ static inline NSString * AFHMACSHA1Signature(NSURLRequest *request, NSString *co
     if (attributes[@"oauth_token_renewable"]) {
         canBeRenewed = AFQueryStringValueIsTrue([attributes objectForKey:@"oauth_token_renewable"]);
     }
+    
+    NSURL *loginURL = nil;
+    if (attributes[@"login_url"]) {
+        loginURL = [NSURL URLWithString:attributes[@"login_url"]];
+    }
 
-    return [self initWithKey:[attributes objectForKey:@"oauth_token"] secret:[attributes objectForKey:@"oauth_token_secret"] session:[attributes objectForKey:@"oauth_session_handle"] expiration:expiration renewable:canBeRenewed];
+    AFOAuth1Token *token = [self initWithKey:[attributes objectForKey:@"oauth_token"] secret:[attributes objectForKey:@"oauth_token_secret"] session:[attributes objectForKey:@"oauth_session_handle"] expiration:expiration renewable:canBeRenewed];
+    [token setLoginURL:loginURL];
+
+    return token;
 }
 
 - (id)initWithKey:(NSString *)key

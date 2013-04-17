@@ -145,6 +145,11 @@ extern NSString * const kAFApplicationLaunchOptionsURLKey;
  */
 @property (nonatomic, copy) NSString *verifier;
 
+/**
+ 
+ */
+@property (nonatomic, copy) NSURL *loginURL;
+
 
 /**
 
